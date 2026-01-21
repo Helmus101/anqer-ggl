@@ -19,28 +19,46 @@ export const Importers = {
       await initGoogleAuth();
       await getAccessToken();
 
+      // 1. Sync & Merge Identities from Contacts
       const contacts = await fetchContacts();
       for (const c of contacts) {
         const emails = c.emailAddresses || [];
+        const phones = c.phoneNumbers || [];
         const primaryEmail = emails[0]?.value;
         const name = c.names?.[0]?.displayName || 'Unknown';
         
+        let pId: UUID | null = null;
+        
+        // Resolve primary ID (Email priority)
         if (primaryEmail) {
-          const pId = await IdentityEngine.resolve(Platform.GOOGLE, IdentifierType.EMAIL, primaryEmail, name);
+          pId = await IdentityEngine.resolve(Platform.GOOGLE, IdentifierType.EMAIL, primaryEmail, name);
+        } else if (phones[0]?.value) {
+          pId = await IdentityEngine.resolve(Platform.GOOGLE, IdentifierType.PHONE, phones[0].value, name);
+        }
+
+        // If we have a Person ID, link all other discovered identifiers to "Merge" them
+        if (pId) {
           for (const e of emails.slice(1)) {
              await db.upsertEvidence({
                evidence_id: db.generateId(), person_id: pId, source_platform: Platform.GOOGLE,
                identifier_type: IdentifierType.EMAIL, identifier_value: e.value, confidence: 0.9, first_seen_at: Date.now()
              });
           }
+          for (const ph of phones) {
+             await db.upsertEvidence({
+               evidence_id: db.generateId(), person_id: pId, source_platform: Platform.GOOGLE,
+               identifier_type: IdentifierType.PHONE, identifier_value: ph.value, confidence: 0.9, first_seen_at: Date.now()
+             });
+          }
         }
       }
 
+      // 2. Sync Gmail Interactions
       let state = db.syncStates.find(s => s.platform === Platform.GMAIL);
-      const { emails, nextPageToken } = await fetchEmails(30, state?.last_cursor || undefined);
+      const { emails: gmailMsgs, nextPageToken } = await fetchEmails(30, state?.last_cursor || undefined);
       const myId = await IdentityEngine.resolve(Platform.SYSTEM, IdentifierType.PLATFORM_ID, 'ME', 'Anqer User');
 
-      for (const email of emails) {
+      for (const email of gmailMsgs) {
         const extRef = `gmail-${email.id}`;
         if (db.interactions.some(i => i.external_reference === extRef)) continue;
 
@@ -84,20 +102,18 @@ export const Importers = {
     await db.upsertSyncRun(startRun);
 
     try {
-      if (!zipFile.name.toLowerCase().endsWith('.zip')) throw new Error("Anqer strictly requires .zip WhatsApp exports.");
+      if (!zipFile.name.toLowerCase().endsWith('.zip')) throw new Error("Anqer requires .zip archives.");
 
       const zip = await JSZip.loadAsync(zipFile);
       const txtFile = Object.values(zip.files).find((f: any) => f.name.endsWith('.txt') && !f.name.startsWith('__'));
-      if (!txtFile) throw new Error("Anqer could not locate the chat .txt within the ZIP archive.");
+      if (!txtFile) throw new Error("Chat log not found in archive.");
       
       const content = await (txtFile as any).async("string");
-      
       const lines = content.split('\n');
       const myId = await IdentityEngine.resolve(Platform.SYSTEM, IdentifierType.PLATFORM_ID, 'ME', 'Anqer User');
       const dailyGroups: Record<string, Record<string, string[]>> = {};
 
       for (const line of lines) {
-        // Multi-format regex for iOS/Android exports
         const match = line.match(/^\[?(\d{1,2}\/\d{1,2}\/\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AP]M)?)\]?\s+(?:-\s+)?([^:]+):\s+(.*)$/i);
         if (!match) continue;
         const [_, dateStr, timeStr, sender, text] = match;
@@ -112,19 +128,18 @@ export const Importers = {
         dailyGroups[dateKey][cleanSender].push(text.trim());
       }
 
+      // Grouping logic: Each day per sender is ONE Interaction
       for (const [dateKey, senders] of Object.entries(dailyGroups)) {
         for (const [senderName, messages] of Object.entries(senders)) {
           if (senderName.toLowerCase() === 'you' || senderName.toLowerCase() === 'me' || senderName === 'Anqer User') continue;
 
-          // IdentityEngine.resolve handles creating new or merging with existing contact based on name/platform ID
           const contactId = await IdentityEngine.resolve(Platform.WHATSAPP, IdentifierType.PLATFORM_ID, senderName, senderName);
           const fullDayText = messages.join('\n');
           const extRef = `wa-${dateKey}-${senderName.replace(/\s+/g, '_')}`;
 
           if (db.interactions.some(i => i.external_reference === extRef)) continue;
 
-          // Detailed AI summary emphasizing relationship and values
-          const summary = await GeminiService.summarizeInteraction(`Day: ${dateKey}\nSender: ${senderName}\nThread Content:\n${fullDayText}`);
+          const summary = await GeminiService.summarizeInteraction(`Day: ${dateKey}\nSource: WhatsApp\nParticipants: You and ${senderName}\nContent Synthesis:\n${fullDayText}`);
           const rawPtr = await db.saveRawContent(fullDayText);
 
           const interaction: Interaction = {

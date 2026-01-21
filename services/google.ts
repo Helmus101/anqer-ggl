@@ -2,13 +2,13 @@
 /**
  * GOOGLE OAUTH CONFIGURATION
  * 
- * IMPORTANT: To fix 'Error 400: invalid_request' (storagerelay):
- * 1. The 'Authorized JavaScript Origins' in Google Console MUST match your current URL exactly.
- * 2. Ensure your browser is not blocking third-party cookies/storage for accounts.google.com.
- * 3. This implementation uses the 'Token Model' (GIS) which is the modern standard.
+ * IMPORTANT: To resolve 'Error 400: invalid_request' (storagerelay):
+ * 1. Your Google Cloud Console OAuth Client MUST have 'http://localhost:3000' in Authorized JavaScript Origins.
+ * 2. It MUST have 'http://localhost:3000/api/auth/google/callback' in Authorized Redirect URIs.
  */
 const CLIENT_ID = '376550598016-aofcs5cm395qh4abelirmdskkjokbr4p.apps.googleusercontent.com';
 const SCOPES = 'https://www.googleapis.com/auth/contacts.readonly https://www.googleapis.com/auth/gmail.readonly';
+const REDIRECT_URI = 'http://localhost:3000/api/auth/google/callback';
 
 let tokenClient: any;
 let gapiInited = false;
@@ -22,7 +22,7 @@ export async function initGoogleAuth(): Promise<void> {
       if (gapiInited && gisInited) resolve();
     };
 
-    // Load and init GAPI client for API usage
+    // Initialize GAPI for API requests
     (window as any).gapi.load('client', async () => {
       await (window as any).gapi.client.init({
         discoveryDocs: [
@@ -34,19 +34,16 @@ export async function initGoogleAuth(): Promise<void> {
       checkInit();
     });
 
-    // Load and init GIS (Google Identity Services) for Auth
-    const gisScript = document.createElement('script');
-    gisScript.src = 'https://accounts.google.com/gsi/client';
-    gisScript.onload = () => {
-      tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
-        client_id: CLIENT_ID,
-        scope: SCOPES,
-        callback: '', // Defined in getAccessToken
-      });
-      gisInited = true;
-      checkInit();
-    };
-    document.head.appendChild(gisScript);
+    // Initialize GIS for Authorization
+    tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPES,
+      ux_mode: 'popup', // Using popup for SPA flow, but setting redirect_uri for console matching
+      redirect_uri: REDIRECT_URI,
+      callback: '', // Handled at request time
+    });
+    gisInited = true;
+    checkInit();
   });
 }
 
@@ -55,7 +52,7 @@ export async function getAccessToken(): Promise<string> {
     try {
       tokenClient.callback = async (resp: any) => {
         if (resp.error !== undefined) {
-          console.error('Anqer Auth Error:', resp);
+          console.error('Anqer OAuth Error:', resp);
           reject(resp);
           return;
         }
@@ -63,7 +60,7 @@ export async function getAccessToken(): Promise<string> {
         resolve(resp.access_token);
       };
 
-      // Standardizing request: removed forced prompts to avoid triggering policy blocks
+      // Request token with standard popup
       tokenClient.requestAccessToken({ prompt: '' });
     } catch (err) {
       reject(err);
@@ -100,7 +97,7 @@ export async function fetchEmails(maxResults = 30, pageToken?: string) {
       });
       fullEmails.push(detail.result);
     } catch (e) {
-      console.warn(`Anqer: Skipped Gmail message ${msg.id}`);
+      console.warn(`Anqer: Skipped message retrieval for ${msg.id}`);
     }
   }
   
