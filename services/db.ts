@@ -1,4 +1,3 @@
-
 import { 
   Person, IdentityEvidence, Interaction, 
   InteractionParticipant, SyncState, SyncRun, UUID 
@@ -22,14 +21,7 @@ class LocalDB {
   async initialize() {
     console.log('Anqer: Initializing deterministic graph sync...');
     try {
-      const [
-        { data: persons },
-        { data: evidence },
-        { data: interactions },
-        { data: participants },
-        { data: states },
-        { data: runs }
-      ] = await Promise.all([
+      const fetchResults = await Promise.allSettled([
         supabase.from('persons').select('*'),
         supabase.from('evidence').select('*'),
         supabase.from('interactions').select('*'),
@@ -38,32 +30,55 @@ class LocalDB {
         supabase.from('sync_runs').select('*').order('started_at', { ascending: false }).limit(50)
       ]);
 
-      if (persons) this.persons = persons;
-      if (evidence) this.evidence = evidence;
-      if (interactions) this.interactions = interactions;
-      if (participants) this.participants = participants;
-      if (states) this.syncStates = states;
-      if (runs) this.syncRuns = runs;
+      const dataMap = fetchResults.map((res, i) => {
+        if (res.status === 'fulfilled' && res.value.data) {
+          return res.value.data;
+        }
+        console.warn(`Anqer Init: Segment ${i} failed or returned no data.`);
+        return [];
+      });
+
+      this.persons = dataMap[0] || [];
+      this.evidence = dataMap[1] || [];
+      this.interactions = dataMap[2] || [];
+      this.participants = dataMap[3] || [];
+      this.syncStates = dataMap[4] || [];
+      this.syncRuns = dataMap[5] || [];
       
       console.log(`Anqer Core: Ingested ${this.persons.length} identity nodes.`);
     } catch (e) {
-      console.error('Anqer Core: Bootstrap failed. Operating in transient mode.', e);
+      console.error('Anqer Core: Bootstrap failed completely. Operating in transient mode.', e);
+      // Ensure we don't have undefined arrays
+      this.persons = this.persons || [];
+      this.evidence = this.evidence || [];
+      this.interactions = this.interactions || [];
+      this.participants = this.participants || [];
+      this.syncStates = this.syncStates || [];
+      this.syncRuns = this.syncRuns || [];
     }
   }
 
   async saveRawContent(content: string): Promise<string> {
     const key = `blob_${this.generateId()}`;
     this.rawContentStore[key] = content;
-    await supabase.from('raw_content').upsert({ id: key, content });
+    try {
+      await supabase.from('raw_content').upsert({ id: key, content });
+    } catch (e) {
+      console.warn("Supabase Raw Storage failed, using local transient store.");
+    }
     return key;
   }
 
   async getRawContent(key: string): Promise<string> {
     if (this.rawContentStore[key]) return this.rawContentStore[key];
-    const { data } = await supabase.from('raw_content').select('content').eq('id', key).single();
-    if (data) {
-      this.rawContentStore[key] = data.content;
-      return data.content;
+    try {
+      const { data } = await supabase.from('raw_content').select('content').eq('id', key).single();
+      if (data) {
+        this.rawContentStore[key] = data.content;
+        return data.content;
+      }
+    } catch (e) {
+      console.warn("Raw Content pointer lookup failed.");
     }
     return 'Content pointer inaccessible.';
   }
@@ -89,9 +104,6 @@ class LocalDB {
     return this.evidence.filter(e => e.person_id === personId);
   }
 
-  /**
-   * Idempotent Upserts (Ensures no duplicates are created during replay/sync)
-   */
   async upsertPerson(person: Person) {
     const existingIdx = this.persons.findIndex(p => p.person_id === person.person_id);
     if (existingIdx >= 0) {
@@ -99,7 +111,9 @@ class LocalDB {
     } else {
       this.persons.push(person);
     }
-    await supabase.from('persons').upsert(person);
+    try {
+      await supabase.from('persons').upsert(person);
+    } catch (e) {}
   }
 
   async upsertEvidence(evidence: IdentityEvidence) {
@@ -109,7 +123,9 @@ class LocalDB {
     );
     if (!isDuplicate) {
       this.evidence.push(evidence);
-      await supabase.from('evidence').upsert(evidence);
+      try {
+        await supabase.from('evidence').upsert(evidence);
+      } catch (e) {}
     }
   }
 
@@ -117,7 +133,9 @@ class LocalDB {
     const isDuplicate = this.interactions.some(i => i.external_reference === interaction.external_reference);
     if (!isDuplicate) {
       this.interactions.push(interaction);
-      await supabase.from('interactions').upsert(interaction);
+      try {
+        await supabase.from('interactions').upsert(interaction);
+      } catch (e) {}
       return true;
     }
     return false;
@@ -130,14 +148,18 @@ class LocalDB {
     );
     if (!isDuplicate) {
       this.participants.push(participant);
-      await supabase.from('participants').upsert(participant);
+      try {
+        await supabase.from('participants').upsert(participant);
+      } catch (e) {}
     }
   }
 
   async upsertSyncState(state: SyncState) {
     this.syncStates = this.syncStates.filter(s => s.platform !== state.platform);
     this.syncStates.push(state);
-    await supabase.from('sync_states').upsert(state);
+    try {
+      await supabase.from('sync_states').upsert(state);
+    } catch (e) {}
   }
 
   async upsertSyncRun(run: SyncRun) {
@@ -147,7 +169,9 @@ class LocalDB {
     } else {
       this.syncRuns.unshift(run);
     }
-    await supabase.from('sync_runs').upsert(run);
+    try {
+      await supabase.from('sync_runs').upsert(run);
+    } catch (e) {}
   }
 }
 

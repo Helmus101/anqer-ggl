@@ -1,4 +1,3 @@
-
 /**
  * GOOGLE OAUTH CONFIGURATION
  * 
@@ -24,35 +23,54 @@ export async function initGoogleAuth(): Promise<void> {
 
     // Initialize GAPI for API requests
     (window as any).gapi.load('client', async () => {
-      await (window as any).gapi.client.init({
-        discoveryDocs: [
-          'https://www.googleapis.com/discovery/v1/apis/people/v1/rest',
-          'https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest'
-        ],
-      });
-      gapiInited = true;
-      checkInit();
+      try {
+        await (window as any).gapi.client.init({
+          discoveryDocs: [
+            'https://www.googleapis.com/discovery/v1/apis/people/v1/rest',
+            'https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest'
+          ],
+        });
+        gapiInited = true;
+        checkInit();
+      } catch (err) {
+        console.error('Anqer GAPI Init Failed:', err);
+        // We still resolve so the app can continue in non-google mode
+        gapiInited = true;
+        checkInit();
+      }
     });
 
     // Initialize GIS for Authorization
-    tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: SCOPES,
-      ux_mode: 'popup', // Using popup for SPA flow, but setting redirect_uri for console matching
-      redirect_uri: REDIRECT_URI,
-      callback: '', // Handled at request time
-    });
-    gisInited = true;
-    checkInit();
+    const initializeGIS = () => {
+      if (!(window as any).google?.accounts?.oauth2) {
+        setTimeout(initializeGIS, 100);
+        return;
+      }
+      tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPES,
+        ux_mode: 'popup',
+        redirect_uri: REDIRECT_URI,
+        callback: '', // Defined at runtime
+      });
+      gisInited = true;
+      checkInit();
+    };
+    initializeGIS();
   });
 }
 
 export async function getAccessToken(): Promise<string> {
   return new Promise((resolve, reject) => {
     try {
+      if (!tokenClient) {
+        reject(new Error("Anqer: Token client not initialized. Ensure GIS script is loaded."));
+        return;
+      }
+
       tokenClient.callback = async (resp: any) => {
         if (resp.error !== undefined) {
-          console.error('Anqer OAuth Error:', resp);
+          console.error('Anqer OAuth Runtime Error:', resp);
           reject(resp);
           return;
         }
@@ -60,7 +78,7 @@ export async function getAccessToken(): Promise<string> {
         resolve(resp.access_token);
       };
 
-      // Request token with standard popup
+      // Request token with a standard popup
       tokenClient.requestAccessToken({ prompt: '' });
     } catch (err) {
       reject(err);

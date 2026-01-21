@@ -1,7 +1,9 @@
-
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Standard environment check to prevent ReferenceError in non-bundled environments
+const apiKey = typeof process !== 'undefined' ? process.env.API_KEY : (window as any).process?.env?.API_KEY;
+
+const ai = new GoogleGenAI({ apiKey: apiKey || '' });
 
 export const GeminiService = {
   /**
@@ -9,6 +11,7 @@ export const GeminiService = {
    * Now includes relationship context and detected values.
    */
   async summarizeInteraction(text: string): Promise<string> {
+    if (!apiKey) return "API Key not configured.";
     try {
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
@@ -28,12 +31,13 @@ export const GeminiService = {
    * Generates a structured relationship summary from interaction history.
    */
   async summarizeRelationship(summaries: string[]): Promise<string> {
+    if (!apiKey) return "Intelligence services unavailable.";
     if (summaries.length === 0) return "No interaction history found.";
     
     const context = summaries.join("\n- ");
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-3-pro-preview', // Using pro for better synthesis
+        model: 'gemini-3-pro-preview', 
         contents: `Synthesize the following interaction history into a master relationship narrative. Summaries:\n- ${context}`,
         config: {
           systemInstruction: "Create a sophisticated relationship dossier. Structure: 1. Relationship Essence (1 sentence), 2. Recurring Themes & Values, 3. Evolution of Interaction. Use professional, objective language. Limit to 8 sentences.",
