@@ -1,0 +1,5 @@
+{
+  "name": "Nexus - Relationship Intelligence",
+  "description": "A robust relationship management platform that ingests interactions from Google, WhatsApp, and LinkedIn to provide AI-powered relationship insights without hallucination.",
+  "requestFramePermissions": []
+}
